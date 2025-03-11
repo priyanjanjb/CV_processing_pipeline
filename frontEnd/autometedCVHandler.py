@@ -1,9 +1,17 @@
-import streamlit as st
+import streamlit as st 
 from PyPDF2 import PdfReader
 import docx
 import re
-from streamlit_gsheets import GSheetsConnection
 import pandas as pd
+import smtplib
+import schedule
+import time
+import pytz
+from datetime import datetime, timedelta
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.utils import formataddr
+from streamlit_gsheets import GSheetsConnection
 
 # Google Sheets connection setup
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -68,11 +76,68 @@ def extract_contact_info(text):
     
     return extracted_name, extracted_email, extracted_phone
 
+# Function to send email
+def send_email(to_email, subject, body):
+    from_email = "your_email@example.com"  # Your email
+    password = "your_email_password"  # Your email password or app password
+
+    # SMTP server configuration (for Gmail in this example)
+    smtp_server = "smtp.gmail.com"
+    smtp_port = 587
+
+    msg = MIMEMultipart()
+    msg['From'] = from_email
+    msg['To'] = to_email
+    msg['Subject'] = subject
+
+    # Attach body to email
+    msg.attach(MIMEText(body, 'plain'))
+
+    try:
+        # Connect to the SMTP server
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()  # Secure the connection
+        server.login(from_email, password)
+
+        # Send email
+        server.sendmail(from_email, to_email, msg.as_string())
+        server.quit()
+        print(f"Email sent to {to_email}")
+    except Exception as e:
+        print(f"Failed to send email: {e}")
+
+# Function to determine the appropriate time to send the email
+def send_follow_up_email(email, name, timezone_str):
+    # Convert applicant's time zone
+    applicant_tz = pytz.timezone(timezone_str)
+    current_time = datetime.now(applicant_tz)
+    send_time = current_time.replace(hour=9, minute=0, second=0, microsecond=0) + timedelta(days=1)
+
+    # Wait until the appropriate time to send the email
+    while datetime.now(applicant_tz) < send_time:
+        time.sleep(60)  # Sleep for a minute to check again
+
+    # Email content
+    subject = "Your CV is under review"
+    body = f"Dear {name},\n\nThank you for submitting your CV. We would like to inform you that your application is currently under review. We will get back to you soon.\n\nBest regards,\nCompany Name"
+
+    # Send email
+    send_email(email, subject, body)
+
+# Scheduling the follow-up email task (adjust this based on actual usage)
+def schedule_follow_up(email, name, timezone_str):
+    # Schedule the email to be sent the next day
+    schedule.every().day.at("09:00").do(send_follow_up_email, email=email, name=name, timezone_str=timezone_str)
+
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+# Streamlit app UI
 st.title("Automated CV Handler")
 
 # Upload CV for Extraction
 upload_cv = st.file_uploader("Upload your CV", type=["pdf", "docx"])
-
 
 if upload_cv is not None:
     file_type = upload_cv.type  # Get file type
@@ -95,7 +160,6 @@ if upload_cv is not None:
 
         # Extract Name, Email, Phone
         extracted_name, extracted_email, extracted_phone = extract_contact_info(extracted_text)
-
 
         # User Input Form for Google Sheets
         with st.form(key="cv_form"):
@@ -136,5 +200,9 @@ if upload_cv is not None:
                     st.success("New entry added successfully to Google Sheets! 🎉")
                 except Exception as e:
                     st.error(f"Error updating Google Sheets: {e}")
+
+                # Schedule follow-up email to be sent the next day
+                schedule_follow_up(email, name, "Asia/Colombo")  # Set the applicant's time zone
+
     else:
         st.warning("⚠️ No readable text found in the CV. It may be scanned or image-based.")

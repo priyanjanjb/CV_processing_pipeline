@@ -2,22 +2,15 @@ import streamlit as st
 from PyPDF2 import PdfReader
 import docx
 import re
-from pydrive.auth import GoogleAuth
-from pydrive.drive import GoogleDrive
+from streamlit_gsheets import GSheetsConnection
+import pandas as pd
 
-gauth = GoogleAuth()
+# Google Sheets connection setup
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-# function to authenticate google drive
-def authenticate():
-    gauth.settings['client_config_file'] = 'client_secret.json'
-    if gauth.credentials is None:
-        gauth.LocalWebserverAuth()
-    elif gauth.access_token_expired:
-        gauth.Refresh()
-    else:
-        gauth.Authorize()
-    gauth.SaveCredentialsFile('client_secret.json')
-
+# Set the spreadsheet ID and worksheet name
+SPREADSHEET_ID = '1PtMEehypQHn4cNBALrN8XcgjQ5lwA91qWHq_DCGWb14'
+WORKSHEET_NAME = "CVdata"
 
 # Function to extract text from PDF
 def extract_text_from_pdf(upload_cv):
@@ -29,8 +22,6 @@ def extract_text_from_pdf(upload_cv):
             text += extracted_text + "\n"
     return text.strip()
 
-
-
 # Function to extract text from DOCX
 def extract_text_from_docx(upload_cv):
     doc = docx.Document(upload_cv)
@@ -39,48 +30,50 @@ def extract_text_from_docx(upload_cv):
 
 # Function to extract Education Section using regex
 def extract_education_section(text):
-    # Regex pattern to find the "Education" section
     education_pattern = r"(?i)(education|academic background|qualifications)[\s\S]+?(?=\n\n|\n[A-Z])"
     match = re.search(education_pattern, text)
-
     return match.group().strip() if match else "❌ Education details not found."
 
-
-# function to extract Qualifications section
+# Function to extract Qualifications Section
 def extract_qualifications_section(text):
-    # Regex pattern to find the "Qualifications" section
     qualifications_pattern = r"(?i)(Qualifications|Skills|Certifications)[\s\S]+?(?=\n\n|\n[A-Z])"
     match = re.search(qualifications_pattern, text)
-
     return match.group().strip() if match else "❌ Qualifications details not found."
 
-
-# function to extract Projects section
+# Function to extract Projects Section
 def extract_projects_section(text):
-    # Regex pattern to find the "Projects" section
     projects_pattern = r"(?i)(Projects|Internships)[\s\S]+?(?=\n\n|\n[A-Z])"
     match = re.search(projects_pattern, text)
-
     return match.group().strip() if match else "❌ Projects details not found."
 
-# function to extract personal_Information section
+# Function to extract Personal Information Section
 def extract_personal_information_section(text):
-    # Regex pattern to find the "Personal Information" section
     personal_information_pattern = r"(?i)(Personal Information|Personal Details|About me)[\s\S]+?(?=\n\n|\n[A-Z])"
     match = re.search(personal_information_pattern, text)
-
     return match.group().strip() if match else "❌ Personal Information details not found."
 
-# Streamlit UI
-st.title('Automated CV Handler')
-name = st.text_input("Name")
-emai  = st.text_input("Email")
-Phone = st.text_input("Phone")
+# Function to extract name, email, and phone from the CV
+def extract_contact_info(text):
+    name_pattern = r"(?i)(name|full\sname|first\sname)\s*[:\-]?\s*(\w+\s\w+)"
+    email_pattern = r"([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})"
+    phone_pattern = r"(\+?\d{1,2}[-\s]?)?(\(?\d{3}\)?[-\s]?)?[\d\s\-]{7,15}"
+    
+    name = re.search(name_pattern, text)
+    email = re.search(email_pattern, text)
+    phone = re.search(phone_pattern, text)
 
+    extracted_name = name.group(2) if name else "❌ Name not found"
+    extracted_email = email.group(0) if email else "❌ Email not found"
+    extracted_phone = phone.group(0) if phone else "❌ Phone not found"
+    
+    return extracted_name, extracted_email, extracted_phone
 
+st.title("Automated CV Handler")
 
-# Upload CV
+# Upload CV for Extraction
 upload_cv = st.file_uploader("Upload your CV", type=["pdf", "docx"])
+
+
 if upload_cv is not None:
     file_type = upload_cv.type  # Get file type
     extracted_text = ""
@@ -94,42 +87,54 @@ if upload_cv is not None:
         extracted_text = extract_text_from_docx(upload_cv)
 
     if extracted_text.strip():
-        # Extract Education Section
+        # Extract sections from CV
         education_section = extract_education_section(extracted_text)
-        st.subheader("Education Section:")
-        st.write(education_section)
-
-        # Extract Qualifications Section
         qualifications_section = extract_qualifications_section(extracted_text)
-        st.subheader("Qualifications Section:")
-        st.write(qualifications_section)
-
-        # Extract Projects Section
         projects_section = extract_projects_section(extracted_text)
-        st.subheader("Projects Section:")
-
-        # Extract Personal Information Section
         personal_information_section = extract_personal_information_section(extracted_text)
-        st.subheader("Personal Information Section:")
-        st.write(personal_information_section)
 
+        # Extract Name, Email, Phone
+        extracted_name, extracted_email, extracted_phone = extract_contact_info(extracted_text)
+
+
+        # User Input Form for Google Sheets
+        with st.form(key="cv_form"):
+            name = st.text_input("Name", extracted_name)
+            phone_number = st.text_input("Phone Number", extracted_phone)  # Ensuring it's stored as text
+            email = st.text_input("Email", extracted_email)
+            education = st.text_area("Education", education_section)
+            qualifications = st.text_area("Qualifications", qualifications_section)
+            projects = st.text_area("Projects", projects_section)
+            personal_information = st.text_area("Personal Information", personal_information_section)
+
+            submit_button = st.form_submit_button("Submit")
+
+            if submit_button:
+                # Prepare data to be uploaded to Google Sheets
+                new_entry = pd.DataFrame({
+                    'Name': [name],
+                    'Phone_number': [phone_number],  # Ensure it remains a string
+                    'Email': [email],
+                    'Education': [education],
+                    'Qualifications': [qualifications],
+                    'Projects': [projects]
+                })
+
+                try:
+                    # Read existing data again to avoid overwriting
+                    data = conn.read(
+                        spreadsheet=SPREADSHEET_ID, 
+                        usecols=['Name', 'Phone_number', 'Email', 'Education', 'Qualifications', 'Projects']
+                    )
+
+                    # Append new data
+                    updated_data = pd.concat([data, new_entry], ignore_index=True)
+
+                    # Update Google Sheets
+                    conn.update(worksheet=WORKSHEET_NAME, data=updated_data)
+
+                    st.success("New entry added successfully to Google Sheets! 🎉")
+                except Exception as e:
+                    st.error(f"Error updating Google Sheets: {e}")
     else:
         st.warning("⚠️ No readable text found in the CV. It may be scanned or image-based.")
-
-    authenticate()
-    drive = GoogleDrive(gauth)
-
-submit = st.button("Submit")
-    # Upload to Google Drive
-if upload_cv is not None:
-
-    with open("upload_cv.pdf", "wb") as f:
-        f.write(upload_cv.read())   
-    # Upload to Google Drive
-    file_metadata = {'title': 'uploaded_file.pdf', 'parents': ['1Z6MAytQ_0KN78gfyB_jZchjVAB2u19zA']}
-    file = drive.CreateFile(file_metadata)
-    file.SetContentFile("uploaded_file.pdf")  
-    file.Upload()
-    st.success("File uploaded successfully!")
-
-# Run: streamlit run filename.py
